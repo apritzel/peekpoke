@@ -23,6 +23,7 @@ static void usage(FILE *stream, const char *progname)
 	fprintf(stream, "\tv: write and read (verify) data\n");
 	fprintf(stream, "\tc: clear a single bit\n");
 	fprintf(stream, "\ts: set a single bit\n");
+	fprintf(stream, "\tB[h:l]: set a range of bits\n");
 	fprintf(stream, "\tp: pause for 10ms\n");
 	fprintf(stream, "\tP: pause for 100ms\n");
 	fprintf(stream, "length:\n");
@@ -86,6 +87,29 @@ static bool is_valid_num(const char *str, bool hex, off_t *value)
 #define ERR_MISSING_DATA	-3
 #define ERR_INVALID_DATA	-4
 
+static int parse_range(const char *str, unsigned long *ret_mask, int *ptr)
+{
+       int i = *ptr;
+       int hi = 0, lo = 0;
+
+       if (s[i++] != '[')
+               return -1;
+       for (; s[i] >= '0' && s[i] <= '9'; i++)
+               hi = hi * 10 + s[i] - '0';
+       if (s[i++] != ':')
+               return -1;
+       for (; s[i] >= '0' && s[i] <= '9'; i++)
+               lo = lo * 10 + s[i] - '0';
+       if (s[i++] != ']')
+               return -1;
+
+	*ptr = i;
+
+	if (ret_mask)
+		*ret_mask = (1UL << (hi + 1)) - 1 - (1UL << lo) + 1;
+	return lo;
+}
+
 /* check the command stream for syntax errors */
 static int check_commands(int argc, char **argv, bool hex, bool *ro,
 			  off_t *highest_offset)
@@ -102,6 +126,10 @@ static int check_commands(int argc, char **argv, bool hex, bool *ro,
 		cmd = argv[i][j++];
 		switch (cmd) {
 		case 'r': break;
+		case 'B':
+			if (parse_range(argv[i], NULL, &j) < 0)
+				return ERR_MISSING_DATA;
+			/* fall-through */
 		case 'v':
 		case 'w':
 		case 's':
@@ -264,6 +292,8 @@ int main(int argc, char** argv)
 
 	for (i = optind; i < argc; i++) {
 		off_t offset;
+		unsigned long mask = 0;
+		int shift = -1;
 		unsigned long data = 0;
 		char cmd, len_spec;
 		int j = 0;
@@ -275,6 +305,12 @@ int main(int argc, char** argv)
 		default: break;
 		}
 
+		if (cmd == 'B') {
+			if ((shift = parse_range(argv[i], &mask, &j)) < 0) {
+				usage(stderr, argv[0]);
+				break;
+			}
+		}
 		len_spec = argv[i][j++];
 		if (len_spec == '.')
 			len_spec = argv[i][j++];
@@ -302,6 +338,11 @@ int main(int argc, char** argv)
 		if (cmd == 'c')
 			data = ~(1UL << data) & read_data(virt_addr, offset,
 							  len_spec, NULL);
+
+		if (cmd == 'B')
+			data = ((data << shift) & mask) |
+				(read_data(virt_addr, offset, len_spec, NULL) &
+								~mask);
 
 		if (cmd != 'r')
 			write_data(virt_addr, offset, len_spec, data);
