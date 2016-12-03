@@ -25,10 +25,11 @@ static int lenspec_to_bytes(char c)
 static void usage(FILE *stream, const char *progname)
 {
 	fprintf(stream,
-		"usage: %s [-h] [-b <base address>] <cmd> [<cmd> ...]\n",
+		"usage: %s [-h] [-n] [-b <base address>] <cmd> [<cmd> ...]\n",
 		progname);
 	fprintf(stream, "\t<cmd>: [rwvcs][.][bhlwq] <offset> [<data>]\n");
 	fprintf(stream, "-h: this help screen\n");
+	fprintf(stream, "-n: dry-run, don't actually poke memory\n");
 	fprintf(stream, "-b <addr>: base address to add to addresses specified in commands\n");
 	fprintf(stream, "actions:\n");
 	fprintf(stream, "\tr: read data\n");
@@ -196,6 +197,13 @@ static unsigned long read_data(char *virt_addr, off_t offset, char len_spec,
 {
 	unsigned long data;
 
+	if (virt_addr == NULL) {
+		fprintf(stderr, "reading %d bytes from offset 0x%llx: ",
+			lenspec_to_bytes(len_spec), (unsigned long long)offset);
+
+		return offset;		/* some content */
+	}
+
 	switch (len_spec) {
 	case 'b':
 		data = *(volatile uint8_t *)(virt_addr + offset);
@@ -228,6 +236,14 @@ static void write_data(char *virt_addr, off_t offset, char len_spec,
 {
 	volatile void *addr = virt_addr + offset;
 
+	if (virt_addr == NULL) {
+		fprintf(stderr, "writing %d bytes to 0x%llx: 0x%llx\n",
+			lenspec_to_bytes(len_spec),
+			(unsigned long long)offset,
+			(unsigned long long)data);
+		return;
+	}
+
 	switch (len_spec) {
 	case 'b':
 		*(volatile uint8_t *)addr = data;
@@ -251,10 +267,11 @@ int main(int argc, char** argv)
 	off_t base_addr = 0, map_addr;
 	char *virt_addr;
 	bool dump = false, verbose = false, hex = false, read_only;
+	bool dryrun = false;
 	size_t pgsize = sysconf(_SC_PAGESIZE);
-	int fd, i;
+	int fd = 0, i;
 
-	while ((ch = getopt(argc, argv, "Hdvb:h")) != -1) {
+	while ((ch = getopt(argc, argv, "Hdvb:nh")) != -1) {
 		switch (ch) {
 		case 'b':
 			base_addr = strtoull(optarg, NULL, 0);
@@ -267,6 +284,9 @@ int main(int argc, char** argv)
 			break;
 		case 'H':
 			hex = true;
+			break;
+		case 'n':
+			dryrun = true;
 			break;
 		case 'h':
 			usage(stdout, argv[0]);
@@ -281,21 +301,27 @@ int main(int argc, char** argv)
 		return -5;
 	}
 
-	fd = open("/dev/mem", (read_only ? O_RDONLY : O_RDWR) | O_SYNC);
-	if (fd < 0) {
-		perror("/dev/mem");
-		return -errno;
-	}
-	map_addr = base_addr & ~(pgsize - 1);
-	virt_addr = mmap(NULL, pgsize, PROT_READ | (read_only ? 0 : PROT_WRITE),
-			 MAP_SHARED, fd, map_addr);
+	if (!dryrun) {
+		fd = open("/dev/mem", (read_only ? O_RDONLY : O_RDWR) | O_SYNC);
+		if (fd < 0) {
+			perror("/dev/mem");
+			return -errno;
+		}
 
-	if (virt_addr == MAP_FAILED) {
-		perror("mmapping /dev/mem");
-		close(fd);
-		return -errno;
+		map_addr = base_addr & ~(pgsize - 1);
+		virt_addr = mmap(NULL, pgsize,
+				 PROT_READ | (read_only ? 0 : PROT_WRITE),
+				 MAP_SHARED, fd, map_addr);
+
+		if (virt_addr == MAP_FAILED) {
+			perror("mmapping /dev/mem");
+			close(fd);
+			return -errno;
+		}
+		virt_addr += (base_addr - map_addr);
+	} else {
+		virt_addr = NULL;
 	}
-	virt_addr += (base_addr - map_addr);
 
 	for (i = optind; i < argc; i++) {
 		off_t offset;
@@ -368,8 +394,10 @@ int main(int argc, char** argv)
 		}
 	}
 
-	munmap(virt_addr, pgsize);
-	close(fd);
+	if (!dryrun) {
+		munmap(virt_addr, pgsize);
+		close(fd);
+	}
 
 	return 0;
 }
