@@ -87,7 +87,7 @@ static bool is_valid_num(const char *str, bool hex, off_t *value)
 #define ERR_MISSING_DATA	-3
 #define ERR_INVALID_DATA	-4
 
-static int parse_range(const char *str, unsigned long *ret_mask, int *ptr)
+static int parse_range(const char *s, unsigned long *ret_mask, int *ptr)
 {
        int i = *ptr;
        int hi = 0, lo = 0;
