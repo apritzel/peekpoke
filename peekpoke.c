@@ -280,7 +280,7 @@ int main(int argc, char** argv)
 		return -errno;
 	}
 	map_addr = base_addr & ~(pgsize - 1);
-	virt_addr = mmap(NULL, pgsize, PROT_READ | (read_only ?: PROT_WRITE),
+	virt_addr = mmap(NULL, pgsize, PROT_READ | (read_only ? 0 : PROT_WRITE),
 			 MAP_SHARED, fd, map_addr);
 
 	if (virt_addr == MAP_FAILED) {
