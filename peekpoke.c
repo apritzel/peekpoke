@@ -9,6 +9,19 @@
 #include <getopt.h>
 #include <sys/mman.h>
 
+static int lenspec_to_bytes(char c)
+{
+	switch(c) {
+	case 'b': return 1;
+	case 'h': return 2;
+	case 'w':
+	case 'l': return 4;
+	case 'q': return 8;
+	}
+
+	return 0;
+}
+
 static void usage(FILE *stream, const char *progname)
 {
 	fprintf(stream,
@@ -45,13 +58,7 @@ static void dump_binary(FILE *stream, unsigned long data, char len_spec)
 {
 	int bit;
 
-	switch (len_spec) {
-	case 'b': bit = 7; break;
-	case 'h': bit = 15; break;
-	case 'l': case 'w': bit = 31; break;
-	case 'q': bit = 63; break;
-	default: return;
-	}
+	bit = lenspec_to_bytes(len_spec) * 8 - 1;
 
 	for (; bit >=0 ; bit--) {
 		if (data & (1UL << bit))
