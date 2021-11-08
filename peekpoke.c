@@ -8,6 +8,7 @@
 #include <unistd.h>
 #include <getopt.h>
 #include <sys/mman.h>
+#include "mapping.h"
 
 static int lenspec_to_bytes(char c)
 {
@@ -120,9 +121,9 @@ static int parse_range(const char *s, unsigned long *ret_mask, int *ptr)
 
 /* check the command stream for syntax errors */
 static int check_commands(int argc, char **argv, bool hex, bool *ro,
-			  off_t *highest_offset)
+			  uintptr_t start_base)
 {
-	off_t offset, hoffs = 0;
+	off_t offset;
 	bool has_write = false;
 	int i;
 	char cmd;
@@ -169,9 +170,7 @@ static int check_commands(int argc, char **argv, bool hex, bool *ro,
 
 		if (!is_valid_num(argv[i], hex, &offset))
 			return ERR_INVALID_OFFSET;
-
-		if (hoffs < offset)
-			hoffs = offset;
+		add_address(start_base + offset);
 
 		if (cmd == 'r')
 			continue;
@@ -186,43 +185,43 @@ static int check_commands(int argc, char **argv, bool hex, bool *ro,
 	if (ro)
 		*ro = !has_write;
 
-	if (highest_offset)
-		*highest_offset = hoffs;
-
 	return 0;
 }
 
-static unsigned long read_data(char *virt_addr, off_t offset, char len_spec,
-			       FILE *binstream)
+static unsigned long read_data(uintptr_t paddr, char len_spec, FILE *binstream)
 {
+	struct mapping *map;
+	unsigned char *vaddr;
 	unsigned long data;
 
-	if (virt_addr == NULL) {
-		fprintf(stderr, "reading %d bytes from offset 0x%llx: ",
-			lenspec_to_bytes(len_spec), (unsigned long long)offset);
+	map = get_mapping(paddr);
+	if (map == NULL || map->vaddr == NULL) {
+		fprintf(stderr, "reading %d bytes from offset 0x%lx: ",
+			lenspec_to_bytes(len_spec), (unsigned long)paddr);
 
-		return offset;		/* some content */
+		return 0;
 	}
+	vaddr = (unsigned char *)map->vaddr + (paddr - map->paddr);
 
 	switch (len_spec) {
 	case 'b':
-		data = *(volatile uint8_t *)(virt_addr + offset);
+		data = *(volatile uint8_t *)vaddr;
 		if (binstream)
 			fwrite(&data, 1, 1, binstream);
 		return data;
 	case 'h':
-		data = *(volatile uint16_t *)(virt_addr + offset);
+		data = *(volatile uint16_t *)vaddr;
 		if (binstream)
 			fwrite(&data, 2, 1, binstream);
 		return data;
 	case 'w':
 	case 'l':
-		data = *(volatile uint32_t *)(virt_addr + offset);
+		data = *(volatile uint32_t *)vaddr;
 		if (binstream)
 			fwrite(&data, 4, 1, binstream);
 		return data;
 	case 'q':
-		data = *(volatile uint64_t *)(virt_addr + offset);
+		data = *(volatile uint64_t *)vaddr;
 		if (binstream)
 			fwrite(&data, 8, 1, binstream);
 		return data;
@@ -231,32 +230,34 @@ static unsigned long read_data(char *virt_addr, off_t offset, char len_spec,
 	return -1;
 }
 
-static void write_data(char *virt_addr, off_t offset, char len_spec,
-		       unsigned long data)
+static void write_data(uintptr_t paddr, char len_spec, unsigned long data)
 {
-	volatile void *addr = virt_addr + offset;
+	struct mapping *map;
+	unsigned char *vaddr;
 
-	if (virt_addr == NULL) {
+	map = get_mapping(paddr);
+	if (map == NULL || map->vaddr == NULL) {
 		fprintf(stderr, "writing %d bytes to 0x%llx: 0x%llx\n",
 			lenspec_to_bytes(len_spec),
-			(unsigned long long)offset,
+			(unsigned long long)paddr,
 			(unsigned long long)data);
 		return;
 	}
+	vaddr = (unsigned char *)map->vaddr + (paddr - map->paddr);
 
 	switch (len_spec) {
 	case 'b':
-		*(volatile uint8_t *)addr = data;
+		*(volatile uint8_t *)vaddr = data;
 		break;
 	case 'h':
-		*(volatile uint16_t *)addr = data;
+		*(volatile uint16_t *)vaddr = data;
 		break;
 	case 'w':
 	case 'l':
-		*(volatile uint32_t *)addr = data;
+		*(volatile uint32_t *)vaddr = data;
 		break;
 	case 'q':
-		*(volatile uint64_t *)addr = data;
+		*(volatile uint64_t *)vaddr = data;
 		break;
 	}
 }
@@ -264,17 +265,15 @@ static void write_data(char *virt_addr, off_t offset, char len_spec,
 int main(int argc, char** argv)
 {
 	int ch;
-	off_t base_addr = 0, map_addr;
-	char *virt_addr;
+	off_t base_addr = 0;
 	bool dump = false, verbose = false, hex = false, read_only;
 	bool dryrun = false;
-	size_t pgsize = sysconf(_SC_PAGESIZE);
 	int fd = 0, i;
 
 	while ((ch = getopt(argc, argv, "Hdvb:nh")) != -1) {
 		switch (ch) {
 		case 'b':
-			base_addr = strtoull(optarg, NULL, 0);
+			base_addr = strtoull(optarg, NULL, hex ? 16 : 0);
 			break;
 		case 'd':
 			dump = true;
@@ -295,7 +294,7 @@ int main(int argc, char** argv)
 	}
 
 	if ((i = check_commands(argc - optind, argv + optind, hex,
-				&read_only, NULL))) {
+				&read_only, base_addr))) {
 		fprintf(stderr, "invalid command sequence: %d\n", i);
 		usage(stderr, argv[0]);
 		return -5;
@@ -308,19 +307,17 @@ int main(int argc, char** argv)
 			return -errno;
 		}
 
-		map_addr = base_addr & ~(pgsize - 1);
-		virt_addr = mmap(NULL, pgsize,
-				 PROT_READ | (read_only ? 0 : PROT_WRITE),
-				 MAP_SHARED, fd, map_addr);
+		for (i = 0; i < num_maps; i++) {
+			maps[i].vaddr = mmap(NULL, maps[i].length, PROT_READ |
+					     (read_only ? 0 : PROT_WRITE),
+					     MAP_SHARED, fd, maps[i].paddr);
 
-		if (virt_addr == MAP_FAILED) {
-			perror("mmapping /dev/mem");
-			close(fd);
-			return -errno;
+			if (maps[i].vaddr == MAP_FAILED) {
+				perror("mmapping /dev/mem");
+				close(fd);
+				return -errno;
+			}
 		}
-		virt_addr += (base_addr - map_addr);
-	} else {
-		virt_addr = NULL;
 	}
 
 	for (i = optind; i < argc; i++) {
@@ -366,22 +363,22 @@ int main(int argc, char** argv)
 		}
 
 		if (cmd == 's')
-			data = (1UL << data) | read_data(virt_addr, offset,
+			data = (1UL << data) | read_data(base_addr + offset,
 							 len_spec, NULL);
 		if (cmd == 'c')
-			data = ~(1UL << data) & read_data(virt_addr, offset,
+			data = ~(1UL << data) & read_data(base_addr + offset,
 							  len_spec, NULL);
 
 		if (cmd == 'B')
 			data = ((data << shift) & mask) |
-				(read_data(virt_addr, offset, len_spec, NULL) &
+				(read_data(base_addr + offset, len_spec, NULL) &
 								~mask);
 
 		if (cmd != 'r')
-			write_data(virt_addr, offset, len_spec, data);
+			write_data(base_addr + offset, len_spec, data);
 
 		if (cmd == 'r' || cmd == 'v') {
-			data = read_data(virt_addr, offset, len_spec,
+			data = read_data(base_addr + offset, len_spec,
 					 dump ? stdout : NULL);
 			if (!verbose) {
 				fprintf(stdout, "0x%lx\n", data);
@@ -395,7 +392,9 @@ int main(int argc, char** argv)
 	}
 
 	if (!dryrun) {
-		munmap(virt_addr, pgsize);
+		for (i = 0; i < num_maps; i++)
+			munmap(maps[i].vaddr, maps[i].length);
+		free(maps);
 		close(fd);
 	}
 

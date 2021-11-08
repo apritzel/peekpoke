@@ -3,7 +3,7 @@ CC=${CROSS_COMPILE}gcc
 
 all: peekpoke
 
-peekpoke: peekpoke.c
+peekpoke: peekpoke.c mapping.c
 	$(CC) -Wall -O -o $@ $^
 
 .PHONY: clean
