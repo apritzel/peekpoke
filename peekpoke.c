@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0+
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
@@ -103,21 +105,22 @@ static bool is_valid_num(const char *str, bool hex, off_t *value)
 #define ERR_MISSING_DATA	-3
 #define ERR_INVALID_DATA	-4
 
+/* Convert a string in the form "[62:32]" to a bitmask. */
 static int parse_range(const char *s, unsigned long *ret_mask, int *ptr)
 {
-       int i = *ptr;
-       int hi = 0, lo = 0;
+	int i = *ptr;
+	int hi = 0, lo = 0;
 
-       if (s[i++] != '[')
-               return -1;
-       for (; s[i] >= '0' && s[i] <= '9'; i++)
-               hi = hi * 10 + s[i] - '0';
-       if (s[i++] != ':')
-               return -1;
-       for (; s[i] >= '0' && s[i] <= '9'; i++)
-               lo = lo * 10 + s[i] - '0';
-       if (s[i++] != ']')
-               return -1;
+	if (s[i++] != '[')
+		return -1;
+	for (; s[i] >= '0' && s[i] <= '9'; i++)
+		hi = hi * 10 + s[i] - '0';
+	if (s[i++] != ':')
+		return -1;
+	for (; s[i] >= '0' && s[i] <= '9'; i++)
+		lo = lo * 10 + s[i] - '0';
+	if (s[i++] != ']')
+		return -1;
 
 	*ptr = i;
 
