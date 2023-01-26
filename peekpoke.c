@@ -34,7 +34,7 @@ static void usage(FILE *stream, const char *progname, bool verbose)
 	fprintf(stream,
 		"usage: %s [-h] [-H] [-n] [-b <base address>] <cmd> [<cmd> ...]\n",
 		progname);
-	fprintf(stream, "\t<cmd>: [rwvcs][.][bhlwq] <offset> [<data>]\n");
+	fprintf(stream, "\t<cmd>: [rwvcsdD][.][bhlwq] <offset> [<data>]\n");
 	fprintf(stream, "\t-h: %shelp screen\n", verbose ? "this " : "");
 	if (!verbose)
 		return;
@@ -50,6 +50,7 @@ static void usage(FILE *stream, const char *progname, bool verbose)
 	fprintf(stream, "\tB[h:l]: set a range of bits\n");
 	fprintf(stream, "\tp: pause for 10ms\n");
 	fprintf(stream, "\tP: pause for 100ms\n");
+	fprintf(stream, "\td: dump range of words\n");
 	fprintf(stream, "length:\n");
 	fprintf(stream, "\tb: byte\n");
 	fprintf(stream, "\th: halfword (two bytes)\n");
@@ -67,6 +68,9 @@ static void usage(FILE *stream, const char *progname, bool verbose)
 	fprintf(stream, "\t\t(clear bit 31 in register 0x7000010)\n");
 	fprintf(stream, "\t%s B[15:8].l 0x3000024 0xa5\n", progname);
 	fprintf(stream, "\t\t(write 0xa5 into bits[15:8], preserving the other bits)\n");
+	fprintf(stream,
+		"\t%s d.l 0x01c20800 9\n", progname);
+	fprintf(stream, "\t\t(dump nine 32-bit words starting at 0x01c20800)\n");
 }
 
 static void dump_binary(FILE *stream, unsigned long data, char len_spec)
@@ -158,6 +162,7 @@ static int check_commands(int argc, char **argv, bool hex, bool *ro,
 		cmd = argv[i][j++];
 		switch (cmd) {
 		case 'r': break;
+		case 'd': case 'D': break;
 		case 'B':
 			if (parse_range(argv[i], NULL, &j) < 0)
 				return (ERR_MISSING_DATA << 16) | i;
@@ -251,6 +256,72 @@ static unsigned long read_data(uintptr_t paddr, char len_spec, FILE *binstream)
 	}
 
 	return -1;
+}
+
+static void dump_word(unsigned long word, char len_spec, FILE *stream)
+{
+	switch(len_spec) {
+	case 'b':
+		fprintf(stream, " %02lx", word & 0xff);
+		break;
+	case 'h':
+		fprintf(stream, " %02lx %02lx",
+			word & 0xff, (word >> 8) & 0xff);
+		break;
+	case 'w': case 'l': case 'q':
+		fprintf(stream, " %02lx %02lx %02lx %02lx",
+			word & 0xff, (word >> 8) & 0xff,
+			(word >> 16) & 0xff, (word >> 24) & 0xff);
+		if (len_spec == 'q' && sizeof(word) > 4)
+			dump_word((word >> 16) >> 16, 'l', stream);
+		break;
+	}
+}
+
+static void dump_range(uintptr_t paddr, size_t num, char len_spec, bool bytes)
+{
+	int i, indent = paddr & 0x0fUL;
+	unsigned long data;
+
+	if (indent) {
+		/* two characters per byte */
+		int spaces = indent * 2;
+
+		if (bytes)
+			/* one separating space per byte */
+			spaces += indent;
+		else
+			/* one separating space per word */
+			spaces += indent / lenspec_to_bytes(len_spec);
+
+		fprintf(stdout, "%08lx %.*s", paddr & ~0x0fUL,
+			spaces, JUST_SPACES);
+	}
+	if (indent > 8)
+		fputc(' ', stdout);
+
+	for (i = 0; i < num; i++) {
+		if ((paddr & 0x0fUL) == 0)
+			fprintf(stdout, "%08lx", (unsigned long)paddr);
+		if ((paddr & 0x07UL) == 0)
+			fputc(' ', stdout);
+		data = read_data(paddr, len_spec, NULL);
+		if (bytes) {
+			dump_word(data, len_spec, stdout);
+		} else {
+			switch(len_spec) {
+			case 'b': fprintf(stdout, " %02lx", data); break;
+			case 'h': fprintf(stdout, " %04lx", data); break;
+			case 'w': case 'l':
+				  fprintf(stdout, " %08lx", data); break;
+			case 'q': fprintf(stdout, " %016lx", data); break;
+			}
+		}
+		paddr += lenspec_to_bytes(len_spec);
+		if ((paddr & 0x0fUL) == 0 && i != num - 1)
+			fputc('\n', stdout);
+	}
+	fputc('\n', stdout);
 }
 
 static void write_data(uintptr_t paddr, char len_spec, unsigned long data)
@@ -398,6 +469,16 @@ int main(int argc, char** argv)
 			}
 
 			data = strtoull(argv[i], NULL, hex ? 16 : 0);
+		}
+
+		if (cmd == 'd') {
+			dump_range(base_addr + offset, data, len_spec, true);
+			continue;
+		}
+
+		if (cmd == 'D') {
+			dump_range(base_addr + offset, data, len_spec, false);
+			continue;
 		}
 
 		if (cmd == 's')
