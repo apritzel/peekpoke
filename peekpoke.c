@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <string.h>
 #include <inttypes.h>
 #include <stdbool.h>
 #include <fcntl.h>
@@ -11,6 +12,9 @@
 #include <getopt.h>
 #include <sys/mman.h>
 #include "mapping.h"
+
+/* Used with printf "%.*s" to indent output. */
+#define JUST_SPACES "                                                                                                                                                                                                                                               "
 
 static int lenspec_to_bytes(char c)
 {
@@ -98,12 +102,21 @@ static bool is_valid_num(const char *str, bool hex, off_t *value)
 	return true;
 }
 
-#define ERR_INVALID_CMD		-1
-#define ERR_INVALID_LEN		-2
-#define ERR_MISSING_OFFSET	-3
-#define ERR_INVALID_OFFSET	-4
-#define ERR_MISSING_DATA	-3
-#define ERR_INVALID_DATA	-4
+enum parse_errors {
+	ERR_INVALID_CMD = 1,
+	ERR_INVALID_LEN,
+	ERR_MISSING_OFFSET,
+	ERR_INVALID_OFFSET,
+	ERR_MISSING_DATA,
+	ERR_INVALID_DATA,
+	NUMBER_PARSE_ERRORS
+};
+
+static const char *error_string[NUMBER_PARSE_ERRORS] = { "",	// no error
+	"invalid command character", "invalid length specifier",
+	"missing address offset", "invalid address offset",
+	"missing data", "invalid data"
+};
 
 /* Convert a string in the form "[62:32]" to a bitmask. */
 static int parse_range(const char *s, unsigned long *ret_mask, int *ptr)
@@ -147,7 +160,7 @@ static int check_commands(int argc, char **argv, bool hex, bool *ro,
 		case 'r': break;
 		case 'B':
 			if (parse_range(argv[i], NULL, &j) < 0)
-				return ERR_MISSING_DATA;
+				return (ERR_MISSING_DATA << 16) | i;
 			/* fall-through */
 		case 'v':
 		case 'w':
@@ -158,7 +171,7 @@ static int check_commands(int argc, char **argv, bool hex, bool *ro,
 		case 'P':
 			continue;
 		default:
-			return ERR_INVALID_CMD;
+			return (ERR_INVALID_CMD << 16) | i;
 		}
 		len_spec = argv[i][j++];
 		if (len_spec == '.')
@@ -172,24 +185,24 @@ static int check_commands(int argc, char **argv, bool hex, bool *ro,
 		case 'q':
 			break;
 		default:
-			return ERR_INVALID_LEN;
+			return (ERR_INVALID_LEN << 16) | i;
 		}
 
 		if (++i >= argc)
-			return ERR_MISSING_OFFSET;
+			return (ERR_MISSING_OFFSET << 16) | i;
 
 		if (!is_valid_num(argv[i], hex, &offset))
-			return ERR_INVALID_OFFSET;
+			return (ERR_INVALID_OFFSET << 16) | i;
 		add_address(start_base + offset);
 
 		if (cmd == 'r')
 			continue;
 
 		if (++i >= argc)
-			return ERR_MISSING_DATA;
+			return (ERR_MISSING_DATA << 16) | i;
 
 		if (!is_valid_num(argv[i], hex, NULL))
-			return ERR_INVALID_DATA;
+			return (ERR_INVALID_DATA << 16) | i;
 	}
 
 	if (ro)
@@ -272,6 +285,22 @@ static void write_data(uintptr_t paddr, char len_spec, unsigned long data)
 	}
 }
 
+static void show_error(int argc, char **argv, int reason, int idx)
+{
+	int pos = 0, i;
+
+	fprintf(stderr, "invalid command sequence: %s\n", error_string[reason]);
+	for (i = 0; i < argc; i++) {
+		int len = fprintf(stderr, "%s%s", i ? " " : "", argv[i]);
+
+		if (i < idx)
+			pos += len;
+	}
+	fputc('\n', stderr);
+	fprintf(stderr, "%.*s^\n", pos + 1, JUST_SPACES);
+	usage(stderr, argv[0], false);
+}
+
 int main(int argc, char** argv)
 {
 	int ch;
@@ -305,8 +334,7 @@ int main(int argc, char** argv)
 
 	if ((i = check_commands(argc - optind, argv + optind, hex,
 				&read_only, base_addr))) {
-		fprintf(stderr, "invalid command sequence: %d\n", i);
-		usage(stderr, argv[0], false);
+		show_error(argc, argv, i >> 16, optind + (i & 0xffff));
 		return -5;
 	}
 
