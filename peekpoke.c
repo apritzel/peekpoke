@@ -23,16 +23,19 @@ static int lenspec_to_bytes(char c)
 	return 0;
 }
 
-static void usage(FILE *stream, const char *progname)
+static void usage(FILE *stream, const char *progname, bool verbose)
 {
 	fprintf(stream,
-		"usage: %s [-h] [-n] [-b <base address>] <cmd> [<cmd> ...]\n",
+		"usage: %s [-h] [-H] [-n] [-b <base address>] <cmd> [<cmd> ...]\n",
 		progname);
 	fprintf(stream, "\t<cmd>: [rwvcs][.][bhlwq] <offset> [<data>]\n");
-	fprintf(stream, "-h: this help screen\n");
-	fprintf(stream, "-n: dry-run, don't actually poke memory\n");
-	fprintf(stream, "-b <addr>: base address to add to addresses specified in commands\n");
-	fprintf(stream, "actions:\n");
+	fprintf(stream, "\t-h: %shelp screen\n", verbose ? "this " : "");
+	if (!verbose)
+		return;
+	fprintf(stream, "\t-H: default to hexadecimal numbers, allows omitting 0x prefix\n");
+	fprintf(stream, "\t-n: dry-run, don't actually poke memory\n");
+	fprintf(stream, "\t-b <addr>: base address to add to addresses specified in commands\n");
+	fprintf(stream, "commands:\n");
 	fprintf(stream, "\tr: read data\n");
 	fprintf(stream, "\tw: write data\n");
 	fprintf(stream, "\tv: write and read (verify) data\n");
@@ -47,13 +50,17 @@ static void usage(FILE *stream, const char *progname)
 	fprintf(stream, "\tl: long (four bytes)\n");
 	fprintf(stream, "\tw: word (four bytes)\n");
 	fprintf(stream, "\tq: quadword (eight bytes)\n");
-	fprintf(stream, "Example:\n");
+	fprintf(stream, "Examples:\n");
 	fprintf(stream,
-		"\t%s -b 0x1c28000 w.l 0 0x41 P w.l 0 0x42 r.l r 0x7c\n",
+		"\t%s -b 0x1c28000 w.l 0 0x41 P w.l 0 0x42 r.l 0x7c\n",
 		progname);
 	fprintf(stream,
-	"\t(write 'a' to register 0, wait 100ms, write 'b' to register 0,\n"
-	"\t read register 0x7c)\n");
+	"\t\t(write 'a' to register 0, wait 100ms, write 'b' to register 0,\n"
+	"\t\t read register 0x7c)\n");
+	fprintf(stream, "\t%s c.l 0x7000010 31\n", progname);
+	fprintf(stream, "\t\t(clear bit 31 in register 0x7000010)\n");
+	fprintf(stream, "\t%s B[15:8].l 0x3000024 0xa5\n", progname);
+	fprintf(stream, "\t\t(write 0xa5 into bits[15:8], preserving the other bits)\n");
 }
 
 static void dump_binary(FILE *stream, unsigned long data, char len_spec)
@@ -288,7 +295,7 @@ int main(int argc, char** argv)
 			dryrun = true;
 			break;
 		case 'h':
-			usage(stdout, argv[0]);
+			usage(stdout, argv[0], true);
 			return 0;
 		}
 	}
@@ -296,7 +303,7 @@ int main(int argc, char** argv)
 	if ((i = check_commands(argc - optind, argv + optind, hex,
 				&read_only, base_addr))) {
 		fprintf(stderr, "invalid command sequence: %d\n", i);
-		usage(stderr, argv[0]);
+		usage(stderr, argv[0], false);
 		return -5;
 	}
 
@@ -337,7 +344,7 @@ int main(int argc, char** argv)
 
 		if (cmd == 'B') {
 			if ((shift = parse_range(argv[i], &mask, &j)) < 0) {
-				usage(stderr, argv[0]);
+				usage(stderr, argv[0], false);
 				break;
 			}
 		}
@@ -348,14 +355,14 @@ int main(int argc, char** argv)
 			len_spec = 'l';
 
 		if (++i >= argc) {
-			usage(stderr, argv[0]);
+			usage(stderr, argv[0], false);
 			break;
 		}
 		offset = strtoull(argv[i], NULL, hex ? 16 : 0);
 
 		if (cmd != 'r') {
 			if (++i >= argc) {
-				usage(stderr, argv[0]);
+				usage(stderr, argv[0], false);
 				break;
 			}
 
